@@ -1,11 +1,18 @@
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
-import * as bcrypt from "https://deno.land/x/bcrypt@v0.4.1/mod.ts";
-import { create, verify } from "https://deno.land/x/djwt@v2.8/mod.ts";
+import { create } from "https://deno.land/x/djwt@v2.8/mod.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, content-type, apikey, x-client-info'
 };
+
+// Simple SHA-256 password hashing (bcrypt not available in edge)
+async function hashPassword(password: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + '_pgn_salt_2026');
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
@@ -15,17 +22,9 @@ serve(async (req) => {
     const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const JWT_SECRET = Deno.env.get('ADMIN_JWT_SECRET') || 'pgn-aimee-secret-2026';
 
-    const { email, password, action } = await req.json();
-
-    // Handle password change action
-    if (action === 'change_password') {
-      const { token, new_password } = await req.json().catch(() => ({ token: null, new_password: null }));
-      // Simplified: just return ok for now
-      return new Response(JSON.stringify({ ok: true }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-    }
-
+    const { email, password } = await req.json();
     if (!email || !password) {
-      return new Response(JSON.stringify({ error: 'email and password required' }), { status: 400, headers: corsHeaders });
+      return new Response(JSON.stringify({ error: 'email and password required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     // Fetch user
@@ -34,15 +33,14 @@ serve(async (req) => {
     });
     const users = await userRes.json();
     const user = users[0];
-
     if (!user) {
-      return new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401, headers: corsHeaders });
+      return new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    // Verify password
-    const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) {
-      return new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401, headers: corsHeaders });
+    // Verify password via SHA-256 hash
+    const inputHash = await hashPassword(password);
+    if (inputHash !== user.password_hash) {
+      return new Response(JSON.stringify({ error: 'Invalid credentials' }), { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
     // Create JWT
@@ -60,7 +58,7 @@ serve(async (req) => {
         sub: user.id,
         email: user.email,
         name: user.name,
-        exp: Math.floor(Date.now() / 1000) + 86400 // 24h
+        exp: Math.floor(Date.now() / 1000) + 86400
       },
       key
     );
@@ -70,6 +68,6 @@ serve(async (req) => {
     });
 
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: corsHeaders });
+    return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   }
 });
